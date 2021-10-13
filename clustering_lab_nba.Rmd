@@ -1,0 +1,233 @@
+---
+title: "NBA Recruits"
+author: "Courtney Kennedy"
+date: "10/6/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE, cache=TRUE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+```{r}
+library(e1071)
+library(tidyverse)
+library(plotly)
+library(htmltools)
+library(devtools)
+library(caret)
+library(NbClust)
+
+```
+
+```{r}
+# Read in Data
+nba <-  read_csv("~/Fall21/introDS/DS-3001-New/data/nba2020-21.csv")
+nba_salaries <- read_csv("~/Fall21/introDS/DS-3001-New/data/nba_salaries_21.csv")
+nba_final = inner_join(nba, nba_salaries)
+#View(nba_final)
+
+#Remove NAs
+nba_final <- na.omit(nba_final)
+
+#rename salary varaible
+nba_final <- rename(nba_final, Salary = `2020-21`)
+#Remove special characters
+nba_final$Player <- gsub("[^[:alnum:]]", "", nba_final$Player)
+
+#Cast Pos as factor
+nba_final$Pos <- fct_collapse(nba_final$Pos, 
+                              C = "C",
+                              PF = "PF",
+                              PG = c("PG", "PG-SG"),
+                              SF = c("SF", "SF-PF"),
+                              SG = "SG")
+
+```
+
+The variables used to cluster the data are GS (games started), MP (minutes played), FG% (field goal percentage), 3P% (three point percentage), 2P% (two point percentage), eFG% (Effective Field Goal Percentage; the formula is (FG + 0.5 * 3P) / FGA), FT% (Free throw percentage), and PTS (points).  All the percentages were chosen since they give the relative success out of the total attempts of the statistic rather than just the quantity of attempts or success.  Games started, minutes played, and points give career long statistics that demonstrate long term success. Since these variables are on different scales they were normalized on a scale of 0 to 1.
+
+```{r}
+#Select the variables to be included in the cluster 
+clust_data_nba <- nba_final[, c("GS", "MP", "FG%", "3P%", "2P%", "eFG%", "FT%", "PTS")]
+
+#Normalization Function 
+normalize <- function(x){
+ (x - min(x)) / (max(x) - min(x))
+}
+#select numeric variable names
+abc <- names(select_if(clust_data_nba, is.numeric))
+#Apply normalizing
+clust_data_nba[abc] <- as_tibble(lapply(clust_data_nba[abc], normalize))
+```
+
+```{r}
+#Run the clustering algo with 2 centers
+set.seed(1)
+kmeans_obj_nba = kmeans(clust_data_nba, centers = 2, 
+                        algorithm = "Lloyd")
+```
+
+```{r}
+#View the results
+kmeans_obj_nba
+```
+The largest difference in means were the variables games started (GS), Minutes played (MP), and Points scored (PTS).  I chose to visualize the clusters with Points scored on the x axis and minutes played on the y axis in 2 dimensions and then added games started on the z axis for the 3 dimensional graph.  
+```{r}
+#Visualize the output
+salary_clusters_nba = as.factor(kmeans_obj_nba$cluster)
+ggplot(nba_final, aes(x = PTS, 
+                      y = MP,
+                      color = Salary,
+                      shape = salary_clusters_nba)) + 
+  geom_point(size = 6) +
+  ggtitle("Minutes Played vs Pts Scored for nba players") +
+  xlab("Points Scored (PTS)") +
+  ylab("Minutes Played (MP)") +
+  scale_shape_manual(name = "Cluster",
+                     labels = c("Cluster 1", "Cluster 2"),
+                     values = c("1", "2")) +
+  theme_light()
+
+
+```
+There is a clear correlation with the clusters and salary seen in the graph.  Cluster 1 is the under performing cluster, and the salary tends to be a darker color therefore they are paid less.  Cluster 2 is the better performing cluster, and they have a lighter color overall therefore they are paid more.  We will be looking to find players in cluster 2 that are paid less to bring to the team.  
+
+```{r}
+#save as a png
+ggsave("NbaSalaryClusters.png", 
+       width = 10, 
+       height = 5.62, 
+       units = "in")
+```
+
+The explained variance is about 50%, which could definitely be improved, but overall it is significant enough to say that there are two distinct clusters. 
+```{r}
+#Evaluate the quality of the clustering 
+
+# Inter-cluster variance,
+# "betweenss" is the sum of the distances between points 
+# from different clusters.
+num_nba = kmeans_obj_nba$betweenss
+
+# Total variance, "totss" is the sum of the distances
+# between all the points in the data set.
+denom_nba = kmeans_obj_nba$totss
+
+# Variance accounted for by clusters.
+(var_exp_nba = num_nba / denom_nba)
+```
+
+```{r}
+#Use the function we created to evaluate several different number of clusters
+
+# The function explained_variance wraps our code for calculating 
+# the variance explained by clustering.
+explained_variance = function(data_in, k){
+  
+  # Running the kmeans algorithm.
+  set.seed(1)
+  kmeans_obj = kmeans(data_in, centers = k, algorithm = "Lloyd", iter.max = 30)
+  
+  # Variance accounted for by clusters:
+  # var_exp = intercluster variance / total variance
+  var_exp = kmeans_obj$betweenss / kmeans_obj$totss
+  var_exp  
+}
+explained_var_nba = sapply(1:10, explained_variance, data_in = clust_data_nba)
+explained_var_nba
+```
+
+```{r}
+#Create a elbow chart of the output 
+
+# Data for ggplot2.
+elbow_data_nba = data.frame(k = 1:10, explained_var_nba)
+
+
+# Plotting data.
+ggplot(elbow_data_nba, 
+       aes(x = k,  
+           y = explained_var_nba)) + 
+  geom_point(size = 4) +           #<- sets the size of the data points
+  geom_line(size = 1) +            #<- sets the thickness of the line
+  xlab('k') + 
+  ylab('Inter-cluster Variance / Total Variance') + 
+  theme_light()
+```
+
+```{r}
+#Use NbClust to select a number of clusters
+# Run NbClust.
+
+(nbclust_obj_nba = NbClust(data = clust_data_nba, method = "kmeans"))
+
+# View the output of NbClust.
+nbclust_obj_nba
+
+# View the output that shows the number of clusters each method recommends.
+nbclust_obj_nba$Best.nc
+```
+
+```{r}
+#Display the results visually 
+freq_k_nba = nbclust_obj_nba$Best.nc[1,]
+freq_k_nba = data.frame(freq_k_nba)
+#View(freq_k_nba)
+
+# Check the maximum number of clusters suggested.
+max(freq_k_nba)
+
+#essentially resets the plot viewer back to default
+#dev.off()
+
+# Plot as a histogram.
+ggplot(freq_k_nba,
+       aes(x = freq_k_nba)) +
+  geom_bar() +
+  scale_x_continuous(breaks = seq(0, 15, by = 1)) +
+  scale_y_continuous(breaks = seq(0, 12, by = 1)) +
+  labs(x = "Number of Clusters",
+       y = "Number of Votes",
+       title = "Cluster Analysis")
+```
+
+```{r}
+#Using the recommended number of cluster compare the quality of the model 
+#with 2 clusters 
+# Both the elbow graph and the nbc Cluster method recommend two clusters.  
+```
+
+
+```{r}
+#Bonus: Create a 3d version of the output
+
+#Add clusters to nba_final dataframe
+
+nba_final$clusters <- (salary_clusters_nba)
+
+# Use plotly to do a 3d imaging 
+
+fig <- plot_ly(nba_final, 
+               type = "scatter3d",
+               mode="markers",
+               symbol = ~clusters, symbols = c('circle', 'square'),
+               x = ~PTS, 
+               y = ~MP, 
+               z = ~GS,
+               color = ~Salary, 
+               text = ~paste('Player:',Player,
+                             "Position:",Pos,
+                             "Team:", Tm))
+
+
+fig
+```
+## Recommended Players
+Looking at the 3D plot of the two clusters, under performing (circles) and over performing (squares), we can see there is a trend of under performing players getting paid less (dark blue).  When trying to find the best performing payers that don't get paid enough, we are looking for players in the over performing square cluster, who have a lower salary (darker blue) rather than the greens and yellows of the higher paid players in the cluster.  The three players I would recommend therefore are: 
+
+1. Trae Young ($6,571,800)
+2. Donovan Mitchel ($5,195,501)
+3. Luka Doni ($8,049,360)
+
+Each of these players are in the better performing cluster and are towards the high end of minutes played, games started, and points scored, however they all have salaries under 10 million.  Players with similar stats as them in the same cluster are normally paid over 20 million. Therefore these are the players that are high performing but not highly paid that you can steal to get the team to the playoffs.  
